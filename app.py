@@ -13,6 +13,7 @@ import streamlit as st
 import ai
 import auth
 import calc
+import discover
 import providers
 import store
 
@@ -136,9 +137,150 @@ with st.sidebar:
 # ট্যাব
 # --------------------------------------------------------------------------
 
-tab_calc, tab_ai, tab_score, tab_saved = st.tabs(
-    ["💰 মার্জিন ক্যালকুলেটর", "🎯 পারসোনা রিসার্চ (AI)", "📊 স্কোরকার্ড", "📁 সেভ করা প্রোডাক্ট"]
+tab_ideas, tab_calc, tab_ai, tab_score, tab_saved = st.tabs(
+    [
+        "💡 প্রোডাক্ট আইডিয়া",
+        "💰 মার্জিন ক্যালকুলেটর",
+        "🎯 পারসোনা রিসার্চ (AI)",
+        "📊 স্কোরকার্ড",
+        "📁 সেভ করা প্রোডাক্ট",
+    ]
 )
+
+
+# ==========================================================================
+# ট্যাব ০ — প্রোডাক্ট আইডিয়া (ডিসকভারি)
+# ==========================================================================
+
+with tab_ideas:
+    st.subheader("কী প্রোডাক্ট আনব?")
+    st.warning(
+        "⚠️ **এগুলো আইডিয়া, প্রমাণ নয়।** AI-এর কাছে বাংলাদেশের লাইভ সেলস ডেটা নেই — "
+        "এই লিস্ট শুধু শূন্য থেকে শুরু করার জন্য। প্রতিটা আইডিয়ার নিচে যাচাইয়ের "
+        "লিঙ্ক আছে; **ওগুলোতে ক্লিক করে নিজের চোখে দেখাই আসল কাজ।**"
+    )
+
+    with st.form("idea_form"):
+        i1, i2 = st.columns([2, 1])
+        with i1:
+            cats = st.multiselect(
+                "ক্যাটাগরি (খালি রাখলে যেকোনো)",
+                discover.CATEGORIES,
+                default=[],
+            )
+            audience = st.text_input(
+                "টার্গেট ক্রেতা (ঐচ্ছিক)",
+                placeholder="যেমন: ঢাকার চাকরিজীবী নারী, বা ছোট দোকানদার",
+            )
+            extra = st.text_area(
+                "অতিরিক্ত নির্দেশনা (ঐচ্ছিক)",
+                height=70,
+                placeholder="যেমন: এমন কিছু যা Daraz-এ এখনো কম পাওয়া যায়",
+            )
+        with i2:
+            pmin, pmax = st.slider("সেল প্রাইস রেঞ্জ (৳)", 200, 6000, (800, 3000), step=100)
+            season = st.selectbox("মৌসুম / উপলক্ষ", discover.SEASONS)
+            n_ideas = st.slider("কয়টা আইডিয়া", 5, 15, 10)
+            max_w = st.select_slider("সর্বোচ্চ ওজন (গ্রাম)", [200, 300, 500, 800, 1500], value=500)
+            no_batt = st.checkbox("ব্যাটারিওয়ালা জিনিস বাদ", value=True)
+            skip_seen = st.checkbox("আগে সেভ করা প্রোডাক্ট বাদ", value=True)
+
+        go = st.form_submit_button("💡 আইডিয়া বের করো", type="primary", use_container_width=True)
+
+    if go:
+        if P.needs_key and not api_key:
+            st.error("সাইডবারে API key দাও (ফ্রি — লিঙ্ক ওখানেই আছে)।")
+        elif not model:
+            st.error("সাইডবারে একটা মডেল বাছো।")
+        else:
+            seen = [r.get("name", "") for r in store.load_all()] if skip_seen else []
+            with st.spinner(f"{model} আইডিয়া খুঁজছে…"):
+                try:
+                    st.session_state["ideas"] = discover.generate_ideas(
+                        provider_key=prov_key,
+                        api_key=api_key,
+                        model=model,
+                        categories=cats,
+                        price_min=float(pmin),
+                        price_max=float(pmax),
+                        count=int(n_ideas),
+                        season=season,
+                        audience=audience.strip(),
+                        extra=extra.strip(),
+                        exclude=[s for s in seen if s],
+                        avoid_battery=no_batt,
+                        max_weight_g=int(max_w),
+                    )
+                except Exception as e:
+                    st.error(f"সমস্যা হয়েছে: {e}")
+
+    idea_data = st.session_state.get("ideas")
+    if idea_data:
+        st.divider()
+        if idea_data.get("notes"):
+            st.info(idea_data["notes"])
+
+        for n, idea in enumerate(idea_data.get("ideas", [])):
+            comp = idea.get("competition_guess", "")
+            badge = {"কম": "🟢", "মাঝারি": "🟡", "বেশি": "🔴"}.get(comp, "⚪")
+            title = f"{badge} {idea['name_bn']}"
+            if idea.get("name_en"):
+                title += f"  ·  {idea['name_en']}"
+
+            with st.expander(title, expanded=(n < 3)):
+                cA, cB = st.columns([3, 2])
+                with cA:
+                    st.markdown(f"**কেন চলতে পারে:** {idea.get('why_bd','')}")
+                    st.markdown(f"**কে কিনবে:** {idea.get('who_buys','')}")
+                    if idea.get("risk"):
+                        st.markdown(f"**⚠️ ঝুঁকি:** {idea['risk']}")
+                with cB:
+                    cmin, cmax = idea["est_cny_min"], idea["est_cny_max"]
+                    st.markdown(
+                        f"**আনুমানিক দাম:** ¥{cmin:.0f}–{cmax:.0f}  \n"
+                        f"**আনুমানিক ওজন:** {idea['est_weight_g']:.0f} গ্রাম  \n"
+                        f"**প্রতিযোগিতা:** {comp or 'অজানা'}  \n"
+                        f"**ক্যাটাগরি:** {idea.get('category','')}"
+                    )
+
+                st.markdown("**🔎 যাচাই করো — এখানেই আসল উত্তর:**")
+                links = discover.verify_links(idea)
+                names = list(links.keys())
+                for row_start in range(0, len(names), 4):
+                    cols = st.columns(4)
+                    for col, nm in zip(cols, names[row_start : row_start + 4]):
+                        col.link_button(nm, links[nm], use_container_width=True)
+
+                st.caption(
+                    "FB Ad Library-তে যে অ্যাড ৩০+ দিন চলছে সেটাই সবচেয়ে শক্ত সিগন্যাল। "
+                    "Daraz-এ সেলার সংখ্যা আর সাম্প্রতিক রিভিউর তারিখ দেখো।"
+                )
+
+                b1, b2 = st.columns(2)
+                if b1.button("💰 ক্যালকুলেটরে পাঠাও", key=f"tocalc_{n}", use_container_width=True):
+                    st.session_state["from_idea"] = {
+                        "name": idea["name_bn"],
+                        "cny": (cmin + cmax) / 2 if cmax else cmin,
+                        "weight": idea["est_weight_g"],
+                        "desc": idea.get("why_bd", ""),
+                    }
+                    st.success("পাঠানো হয়েছে — 'মার্জিন ক্যালকুলেটর' ট্যাবে যাও")
+                if b2.button("💾 লিস্টে সেভ করো", key=f"saveidea_{n}", use_container_width=True):
+                    store.add_product(
+                        {"name": idea["name_bn"], "type": "idea", "idea": idea}
+                    )
+                    st.success("সেভ হয়েছে")
+
+        st.divider()
+        st.download_button(
+            "⬇️ পুরো লিস্ট JSON-এ নামাও",
+            data=json.dumps(idea_data, ensure_ascii=False, indent=2),
+            file_name="product_ideas.json",
+            mime="application/json",
+        )
+        st.caption(
+            f"মডেল: {idea_data.get('_model','')}  ·  চেষ্টা: {idea_data.get('_attempts',1)}"
+        )
 
 
 # ==========================================================================
@@ -152,15 +294,28 @@ with tab_calc:
         "হাতে কত থাকে সেটাই আসল সংখ্যা।"
     )
 
-    pname = st.text_input("প্রোডাক্টের নাম", key="calc_name", placeholder="যেমন: মিনি নেক ম্যাসাজার")
+    fi = st.session_state.get("from_idea", {})
+    if fi:
+        st.success(f"আইডিয়া থেকে এসেছে: **{fi['name']}** — সংখ্যাগুলো আনুমানিক, 1688 দেখে ঠিক করো।")
+
+    pname = st.text_input(
+        "প্রোডাক্টের নাম",
+        value=fi.get("name", ""),
+        key="calc_name",
+        placeholder="যেমন: মিনি নেক ম্যাসাজার",
+    )
 
     c1, c2, c3 = st.columns(3)
 
     with c1:
         st.markdown("##### 🇨🇳 সোর্সিং")
-        cny = st.number_input("1688 দাম (¥/পিস)", value=30.0, min_value=0.0, step=1.0)
+        cny = st.number_input(
+            "1688 দাম (¥/পিস)", value=float(fi.get("cny", 30.0)), min_value=0.0, step=1.0
+        )
         rate = st.number_input("¥1 = ৳", value=float(default_rate), step=0.5, format="%.2f")
-        weight = st.number_input("ওজন (গ্রাম/পিস)", value=300.0, min_value=1.0, step=25.0)
+        weight = st.number_input(
+            "ওজন (গ্রাম/পিস)", value=float(fi.get("weight", 300.0)), min_value=1.0, step=25.0
+        )
         freight = st.number_input("ফ্রেইট (৳/কেজি)", value=float(default_freight), step=50.0)
         duty = st.number_input("ডিউটি + ক্লিয়ারেন্স (%)", value=30.0, step=5.0)
         agent = st.number_input("এজেন্ট কমিশন (%)", value=5.0, step=1.0)
@@ -309,6 +464,7 @@ with tab_calc:
         "cny": cny,
         "landed": r.landed_unit,
         "sell": sell,
+        "desc": fi.get("desc", ""),
     }
 
 
@@ -331,6 +487,7 @@ with tab_ai:
             ai_name = st.text_input("প্রোডাক্টের নাম", value=pf.get("name", ""))
             ai_desc = st.text_area(
                 "বিবরণ (কী জিনিস, কী কাজ করে, ফিচার)",
+                value=pf.get("desc", ""),
                 height=110,
                 placeholder="যেমন: রিচার্জেবল, ৩টা স্পিড মোড, ঘাড় ও কাঁধে ব্যবহার করা যায়",
             )
